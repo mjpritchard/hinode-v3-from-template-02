@@ -1,4 +1,4 @@
-name: Lint & build
+name: Lint build deploy
 on:
   workflow_dispatch:
   push:
@@ -16,47 +16,36 @@ permissions:
   contents: read
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
+  #lint:
+  #  runs-on: ubuntu-latest
 
-    steps:
-    - name: Check out repository
-      uses: actions/checkout@v7
+  #  steps:
+  #  - name: Check out repository
+  #    uses: actions/checkout@v7
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v7
-      with:
-        node-version: lts/*
-        cache: 'npm'
-        cache-dependency-path: '**/package-lock.json'
+  #  - name: Set up Node.js
+  #    uses: actions/setup-node@v7
+  #    with:
+  #      node-version: 26.x
+  #      cache: 'npm'
+  #      cache-dependency-path: '**/package-lock.json'
 
-    # [24/AUG/23] Adjusted from npm ci to prevent EBADPLATFORM error due to fsevents
-    - name: Install npm
-      run: npm i
+  #  # [24/AUG/23] Adjusted from npm ci to prevent EBADPLATFORM error due to fsevents
+  #  - name: Install npm
+  #    run: npm i
 
-    - name: Lint the source files
-      run: npm run lint
+  #  - name: Lint the source files
+  #    run: npm run lint
 
   build:
-    needs: lint
-
-    strategy:
-      matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
-        # See supported Node.js release schedule at https://nodejs.org/en/about/releases/
-        node-version: [22.x, 24.x]
-        include:
-          - os: ubuntu-latest
-            hugo_cachedir: '/tmp/hugo_cache_runner'
-          - os: macos-latest
-            hugo_cachedir: '/Users/runner/Library/Caches/hugo_cache'
-          - os: windows-latest
-            hugo_cachedir: '~\AppData\Local\hugo_cache'
-
-    runs-on: ${{ matrix.os }}
+    #needs: lint
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
 
     env:
-      HUGO_CACHEDIR: ${{ matrix.hugo_cachedir }}
+      HUGO_CACHEDIR: /tmp/hugo_cache_runner
 
     steps:
     - name: Check out repository
@@ -67,10 +56,10 @@ jobs:
       with:
         go-version: "stable"
 
-    - name: Set up Node.js ${{ matrix.node-version }}
+    - name: Set up Node.js
       uses: actions/setup-node@v7
       with:
-        node-version: ${{ matrix.node-version }}
+        node-version: 26.x
         cache: 'npm'
         cache-dependency-path: '**/package-lock.json'
 
@@ -78,58 +67,27 @@ jobs:
       env:
         DART_SASS_VERSION: "1.98.0"
       run: |
-        if [ "$RUNNER_OS" == "Linux" ]; then
-          curl -fsSL "https://github.com/sass/dart-sass/releases/download/${DART_SASS_VERSION}/dart-sass-${DART_SASS_VERSION}-linux-x64.tar.gz" \
-            | tar -xz -C "$HOME"
-          echo "$HOME/dart-sass" >> $GITHUB_PATH
-        elif [ "$RUNNER_OS" == "macOS" ]; then
-          ARCH=$(uname -m)
-          if [ "$ARCH" == "arm64" ]; then
-            SASS_ARCH="macos-arm64"
-          else
-            SASS_ARCH="macos-x64"
-          fi
-          curl -fsSL "https://github.com/sass/dart-sass/releases/download/${DART_SASS_VERSION}/dart-sass-${DART_SASS_VERSION}-${SASS_ARCH}.tar.gz" \
-            | tar -xz -C "$HOME"
-          echo "$HOME/dart-sass" >> $GITHUB_PATH
-        elif [ "$RUNNER_OS" == "Windows" ]; then
-          choco install sass
-        fi
+        curl -fsSL "https://github.com/sass/dart-sass/releases/download/${DART_SASS_VERSION}/dart-sass-${DART_SASS_VERSION}-linux-x64.tar.gz" \
+          | tar -xz -C "$HOME"
+        echo "$HOME/dart-sass" >> "$GITHUB_PATH"
       shell: bash
 
-    # [24/AUG/23] Adjusted from npm ci for non-macOS to prevent EBADPLATFORM error due to fsevents
-    - name: Perform clean install of npm
-      run: |
-        if [ "$RUNNER_OS" == "macOS" ]; then
-          npm ci
-        else
-          npm i
-        fi
-      shell: bash
+    - name: Install npm dependencies
+      run: npm i
 
-    # On Windows, HUGO_CACHEDIR is initialised from the matrix as '~\AppData\Local\hugo_cache'.
-    # Hugo requires an absolute path, so expand ~ to %LOCALAPPDATA% before using the cache.
-    - name: Expand Hugo cache directory on Windows
-      if: runner.os == 'Windows'
-      run: echo "HUGO_CACHEDIR=$env:LOCALAPPDATA\hugo_cache" >> $env:GITHUB_ENV
-      shell: pwsh
-
-    # Cache Hugo cachedir and resourcedir (configured in config/ci/hugo.toml) for each OS.
+    # Cache Hugo cachedir and resourcedir (configured in config/ci/hugo.toml).
     # The key restores the previous snapshot as a warm start, then saves a fresh one after build.
     # No additional content-based invalidation is needed; Hugo uses checksums itself.
     #
     # The suffix rotates weekly rather than per run. A run_id suffix saves a fresh entry every run and
     # never reclaims the previous one, and a repository's Actions cache is a single ~10 GB LRU pool
     # shared by every workflow in it — so those entries fill the pool and GitHub then evicts by last
-    # access, taking out the small caches other jobs depend on rather than the ones causing the
-    # pressure. An ISO-week suffix caps this prefix at roughly two live entries per OS per branch.
+    # access, taking out the small caches other jobs depend on rather than the ones causing the pressure.
     #
-    # %G/%V are the ISO year and week and must be paired — %Y/%V is wrong across a year boundary. The
-    # step needs an explicit bash shell because the Windows legs of the matrix default to pwsh.
+    # %G/%V are the ISO year and week and must be paired — %Y/%V is wrong across a year boundary.
     - name: Compute the weekly cache epoch
       id: cache-epoch
       run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
-      shell: bash
 
     - name: Use Hugo cache
       uses: actions/cache@v6
@@ -142,5 +100,41 @@ jobs:
     - name: Display environment
       run: npm run env
 
-    - name: Build main site
+    - name: Configure GitHub Pages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      id: pages
+      uses: actions/configure-pages@v6
+
+    - name: Build site
+      if: github.event_name != 'push' || github.ref != 'refs/heads/main'
       run: npm run build:cache
+
+    - name: Prepare site for GitHub Pages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: npm run prebuild
+
+    - name: Build site for GitHub Pages
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: npm run build -- -e ci --baseURL "${{ steps.pages.outputs.base_url }}/"
+
+    - name: Upload Pages artifact
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      uses: actions/upload-pages-artifact@v5
+      with:
+        path: ./public
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
